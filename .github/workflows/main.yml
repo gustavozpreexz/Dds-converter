@@ -1,0 +1,711 @@
+name: Build APK
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Criar projeto
+        run: |
+          mkdir -p app/src/main/java/com/ddsconverter/app app/src/main/assets app/src/main/res/mipmap-xxhdpi
+          cat > settings.gradle <<'FIM_0_ARQUIVO'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "DDSparaPNG"
+          include ':app'
+          FIM_0_ARQUIVO
+          cat > build.gradle <<'FIM_1_ARQUIVO'
+          plugins { id 'com.android.application' version '8.2.2' apply false }
+          FIM_1_ARQUIVO
+          cat > gradle.properties <<'FIM_2_ARQUIVO'
+          org.gradle.jvmargs=-Xmx2g
+          android.nonTransitiveRClass=true
+          FIM_2_ARQUIVO
+          cat > app/build.gradle <<'FIM_3_ARQUIVO'
+          plugins { id 'com.android.application' }
+          android {
+              namespace 'com.ddsconverter.app'
+              compileSdk 34
+              defaultConfig {
+                  applicationId "com.ddsconverter.app"
+                  minSdk 29
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+          FIM_3_ARQUIVO
+          cat > app/src/main/AndroidManifest.xml <<'FIM_4_ARQUIVO'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application android:label="DDS para PNG" android:allowBackup="true" android:icon="@mipmap/ic_launcher"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          FIM_4_ARQUIVO
+          cat > app/src/main/java/com/ddsconverter/app/MainActivity.java <<'FIM_5_ARQUIVO'
+          package com.ddsconverter.app;
+
+          import android.app.Activity;
+          import android.content.ContentValues;
+          import android.content.Intent;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.os.Environment;
+          import android.provider.MediaStore;
+          import android.util.Base64;
+          import android.webkit.JavascriptInterface;
+          import android.webkit.ValueCallback;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import android.widget.Toast;
+          import java.io.OutputStream;
+
+          public class MainActivity extends Activity {
+              private static final int REQ = 1;
+              private WebView web;
+              private ValueCallback<Uri[]> pending;
+
+              @Override protected void onCreate(Bundle b) {
+                  super.onCreate(b);
+                  web = new WebView(this);
+                  setContentView(web);
+                  WebSettings s = web.getSettings();
+                  s.setJavaScriptEnabled(true);
+                  s.setDomStorageEnabled(true);
+                  web.addJavascriptInterface(new Bridge(), "AndroidBridge");
+                  web.setWebViewClient(new WebViewClient());
+                  web.setWebChromeClient(new WebChromeClient() {
+                      @Override public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> cb, FileChooserParams p) {
+                          if (pending != null) pending.onReceiveValue(null);
+                          pending = cb;
+                          Intent i = new Intent(Intent.ACTION_GET_CONTENT);
+                          i.addCategory(Intent.CATEGORY_OPENABLE);
+                          i.setType("*/*");
+                          i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                          try {
+                              startActivityForResult(Intent.createChooser(i, "Escolher arquivos"), REQ);
+                          } catch (Exception e) {
+                              pending = null;
+                              cb.onReceiveValue(null);
+                              return false;
+                          }
+                          return true;
+                      }
+                  });
+                  web.loadUrl("file:///android_asset/index.html");
+              }
+
+              @Override protected void onActivityResult(int req, int res, Intent data) {
+                  if (req == REQ && pending != null) {
+                      pending.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(res, data));
+                      pending = null;
+                  } else {
+                      super.onActivityResult(req, res, data);
+                  }
+              }
+
+              @Override public void onBackPressed() {
+                  if (web.canGoBack()) web.goBack(); else super.onBackPressed();
+              }
+
+              class Bridge {
+                  @JavascriptInterface public String save(String name, String b64) {
+                      try {
+                          byte[] d = Base64.decode(b64, Base64.DEFAULT);
+                          final String safe = name.replace('/', '_');
+                          String l = safe.toLowerCase();
+                          String mime = l.endsWith(".zip") ? "application/zip" : l.endsWith(".png") ? "image/png" : "application/octet-stream";
+                          ContentValues v = new ContentValues();
+                          v.put(MediaStore.Downloads.DISPLAY_NAME, safe);
+                          v.put(MediaStore.Downloads.MIME_TYPE, mime);
+                          v.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                          Uri u = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+                          try (OutputStream o = getContentResolver().openOutputStream(u)) { o.write(d); }
+                          runOnUiThread(() -> Toast.makeText(MainActivity.this, "Salvo em Downloads: " + safe, Toast.LENGTH_LONG).show());
+                          return "ok";
+                      } catch (Exception e) {
+                          final String m = String.valueOf(e);
+                          runOnUiThread(() -> Toast.makeText(MainActivity.this, "Erro ao salvar: " + m, Toast.LENGTH_LONG).show());
+                          return "erro";
+                      }
+                  }
+              }
+          }
+          FIM_5_ARQUIVO
+          cat > app/src/main/assets/index.html <<'FIM_6_ARQUIVO'
+          <!DOCTYPE html>
+          <html lang="pt-BR">
+          <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+          <title>DDS para PNG</title>
+          <link rel="preconnect" href="https://fonts.googleapis.com">
+          <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;700&family=Figtree:wght@400;600&display=swap">
+          <style>
+          :root{--bg:#eceef5;--surface:#fff;--ink:#1c2040;--muted:#5d6382;--line:#c9cde0;--accent:#2f4bff;--on-accent:#fff;--ck1:#dfe2ee;--ck2:#f6f7fb;--err:#b3261e;
+          box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+          @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#13152a;--surface:#1c1f3a;--ink:#eceefb;--muted:#9fa5c9;--line:#363a63;--accent:#7e91ff;--on-accent:#10132b;--ck1:#2a2e52;--ck2:#222644;--err:#ffb4ab}}
+          :root[data-theme="dark"]{--bg:#13152a;--surface:#1c1f3a;--ink:#eceefb;--muted:#9fa5c9;--line:#363a63;--accent:#7e91ff;--on-accent:#10132b;--ck1:#2a2e52;--ck2:#222644;--err:#ffb4ab}
+          html{scroll-padding-top:env(safe-area-inset-top,0px)}
+          *,*::before,*::after{box-sizing:inherit}
+          body{margin:0;background:#1b1d2b;color:var(--ink);font:400 16px/1.5 Figtree,system-ui,-apple-system,"Segoe UI",sans-serif}
+          body::before{content:"";position:fixed;inset:0;z-index:-1;background:linear-gradient(rgba(12,14,28,.25),rgba(12,14,28,.25)),linear-gradient(160deg,#2f4bff,#1c2040)}
+          main{width:min(720px,calc(100% - 20px));margin:14px auto 24px;padding:24px 18px 32px;background:color-mix(in srgb,var(--bg) 88%,transparent);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);border-radius:20px}
+          select{font:inherit;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+          .btns{display:flex;gap:8px;flex-wrap:wrap}
+          button:disabled{opacity:.6;cursor:progress}
+          h1{font:700 clamp(2rem,9vw,3rem)/1.05 "Bricolage Grotesque",Figtree,system-ui,sans-serif;margin:0 0 10px;letter-spacing:-.02em}
+          .lead{color:var(--muted);margin:0 0 22px;max-width:52ch}
+          .drop{display:block;border:2px dashed var(--line);border-radius:16px;padding:30px 18px;text-align:center;cursor:pointer;background:
+          conic-gradient(var(--ck1) 25%,var(--ck2) 0 50%,var(--ck1) 0 75%,var(--ck2) 0) 0 0/20px 20px;transition:border-color .15s}
+          .drop:hover,.drop.over,.drop:focus-within{border-color:var(--accent)}
+          .drop strong{display:inline-block;background:var(--surface);padding:8px 14px;border-radius:10px;font-weight:600}
+          .drop span{display:block;margin-top:10px;color:var(--ink);font-size:.95rem;text-shadow:0 0 6px var(--bg),0 0 6px var(--bg)}
+          .drop input{position:absolute;opacity:0;width:1px;height:1px}
+          .opts{display:flex;gap:10px;align-items:center;margin:16px 0 4px;color:var(--muted);font-size:.95rem}
+          .opts input{width:20px;height:20px;accent-color:var(--accent)}
+          #list{display:grid;gap:14px;margin-top:18px}
+          .card{background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+          .pic{background:conic-gradient(var(--ck1) 25%,var(--ck2) 0 50%,var(--ck1) 0 75%,var(--ck2) 0) 0 0/16px 16px;display:flex;justify-content:center;padding:10px}
+          .pic canvas{max-width:100%;height:auto;max-height:60vh;image-rendering:auto}
+          .meta{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:12px 14px;flex-wrap:wrap}
+          .meta b{display:block;overflow-wrap:anywhere;font-weight:600}
+          .meta small{color:var(--muted)}
+          button{font:600 1rem Figtree,system-ui,sans-serif;background:var(--accent);color:var(--on-accent);border:0;border-radius:10px;padding:10px 16px;cursor:pointer;min-height:44px}
+          button:focus-visible,.drop:focus-within{outline:3px solid var(--accent);outline-offset:2px}
+          button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+          .err{padding:14px;color:var(--err)}
+          .bar{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}
+          .hint{color:var(--muted);font-size:.9rem;margin-top:22px}
+          </style>
+          </head>
+          <body>
+          <main>
+          <h1>DDS para PNG</h1>
+          <p class="lead">Escolha um ou mais arquivos .dds e baixe cada um como PNG ou AST. A conversão acontece no seu aparelho: nada é enviado a servidores.</p>
+
+          <label class="drop" id="drop">
+            <input type="file" id="file" accept=".dds,.zip,application/zip" multiple>
+            <strong>Escolher DDS ou ZIP</strong>
+            <span>ou arraste-os para cá. Um .zip é aberto e todos os .dds dentro dele são convertidos</span>
+          </label>
+
+          <div class="bar"><button class="ghost" id="pickdir">Escolher uma pasta</button><input type="file" id="dir" webkitdirectory multiple hidden></div>
+          <label class="opts"><input type="checkbox" id="opaque"> Remover transparência (fundo opaco)</label>
+
+          <label class="opts">Extensão do AST <select id="ext"><option value="astc">.astc</option><option value="ast">.ast</option></select></label>
+
+          <p class="hint" id="status" aria-live="polite"></p>
+          <div id="list" aria-live="polite"></div>
+          <div class="bar" id="bar" hidden><button id="all">Baixar todos (PNG em .zip)</button><button id="allast">Baixar todos (AST em .zip)</button><button class="ghost" id="clear">Limpar lista</button></div>
+
+          <p class="hint">Entrada: DXT1, DXT3, DXT5 (BC1–BC3), BC4, BC5 e pixels sem compressão (RGB/RGBA/BGRA, incluindo cabeçalho DX10); só o primeiro nível de mipmap. BC6H e BC7 ainda não são suportados. O AST sai como ASTC LDR 4×4 (RGBA) e é entregue dentro de um .zip, porque o visualizador só permite salvar alguns tipos de arquivo. Extraia o .zip para obter o arquivo. Ao abrir um .zip ou uma pasta, a estrutura de pastas é mantida nas conversões em lote.</p>
+          </main>
+
+          <script>
+          /* Ponte com o Android: salva arquivos na pasta Downloads */
+          window.claude={use:async n=>n==='downloads'?{save:({filename,data})=>new Promise((res,rej)=>{
+            const fr=new FileReader();
+            fr.onload=()=>{try{AndroidBridge.save(filename,String(fr.result).split(',')[1]);res({status:'saved'});}catch(e){rej({code:'unavailable',message:String(e)});}};
+            fr.onerror=()=>rej({code:'unavailable',message:'falha ao ler o arquivo'});
+            fr.readAsDataURL(data instanceof Blob?data:new Blob([data]));})}:null};
+          </script>
+          <script>
+          const $ = s => document.querySelector(s);
+          const items = [];
+          const FC = s => (s.charCodeAt(0) | s.charCodeAt(1) << 8 | s.charCodeAt(2) << 16 | s.charCodeAt(3) << 24) >>> 0;
+
+          function c565(v){return [((v>>11&31)*255/31+.5)|0, ((v>>5&63)*255/63+.5)|0, ((v&31)*255/31+.5)|0];}
+
+          function alphaBlock(dv,p){
+            const a0=dv.getUint8(p), a1=dv.getUint8(p+1), t=[a0,a1];
+            if(a0>a1){for(let i=1;i<7;i++)t.push(((7-i)*a0+i*a1)/7|0);}
+            else{for(let i=1;i<5;i++)t.push(((5-i)*a0+i*a1)/5|0);t.push(0,255);}
+            const bits=dv.getUint32(p+2,true)+dv.getUint16(p+6,true)*4294967296, r=new Uint8Array(16);
+            for(let i=0;i<16;i++)r[i]=t[Math.floor(bits/2**(3*i))%8];
+            return r;
+          }
+
+          function decodeBlocks(dv,o,w,h,kind){
+            const out=new Uint8ClampedArray(w*h*4), bw=(w+3)>>2, bh=(h+3)>>2;
+            const size=(kind==='bc1'||kind==='bc4')?8:16, px=new Uint8Array(64);
+            for(let by=0;by<bh;by++)for(let bx=0;bx<bw;bx++){
+              const p=o+(by*bw+bx)*size;
+              if(p+size>dv.byteLength)throw new Error('O arquivo parece estar incompleto.');
+              if(kind==='bc4'||kind==='bc5'){
+                const r=alphaBlock(dv,p), g=kind==='bc5'?alphaBlock(dv,p+8):r;
+                for(let i=0;i<16;i++){px[i*4]=r[i];px[i*4+1]=g[i];px[i*4+2]=kind==='bc5'?0:r[i];px[i*4+3]=255;}
+              }else{
+                const cp=kind==='bc1'?p:p+8, c0=dv.getUint16(cp,true), c1=dv.getUint16(cp+2,true);
+                const a=c565(c0), b=c565(c1), four=kind!=='bc1'||c0>c1, pal=[a,b];
+                if(four){pal.push(a.map((v,i)=>((2*v+b[i])/3)|0),a.map((v,i)=>((v+2*b[i])/3)|0));}
+                else{pal.push(a.map((v,i)=>((v+b[i])>>1)),[0,0,0]);}
+                const bits=dv.getUint32(cp+4,true);
+                let al=null; if(kind==='bc3')al=alphaBlock(dv,p);
+                for(let i=0;i<16;i++){
+                  const idx=bits>>(2*i)&3, c=pal[idx];
+                  px[i*4]=c[0];px[i*4+1]=c[1];px[i*4+2]=c[2];
+                  let A=255;
+                  if(kind==='bc1'&&!four&&idx===3)A=0;
+                  else if(kind==='bc2'){const by2=dv.getUint8(p+(i>>1));A=(i&1?by2>>4:by2&15)*17;}
+                  else if(kind==='bc3')A=al[i];
+                  px[i*4+3]=A;
+                }
+              }
+              for(let y=0;y<4;y++){const yy=by*4+y;if(yy>=h)break;
+                for(let x=0;x<4;x++){const xx=bx*4+x;if(xx>=w)break;
+                  const s=(y*4+x)*4,d=(yy*w+xx)*4;
+                  out[d]=px[s];out[d+1]=px[s+1];out[d+2]=px[s+2];out[d+3]=px[s+3];}}
+            }
+            return out;
+          }
+
+          function decodeRaw(dv,o,w,h,bpp,masks,lum,alphaOnly){
+            const bytes=bpp>>3;
+            if(![1,2,3,4].includes(bytes))throw new Error('Profundidade de pixel não suportada ('+bpp+' bits).');
+            if(o+w*h*bytes>dv.byteLength)throw new Error('O arquivo parece estar incompleto.');
+            const info=m=>{if(!m)return null;let s=0;while(!((m>>>s)&1))s++;let n=0;while((m>>>(s+n))&1&&s+n<32)n++;return{m,s,n};};
+            const [R,G,B,A]=masks.map(info);
+            if(!R&&!G&&!B&&!A)throw new Error('Formato de pixel não suportado.');
+            const get=(v,c,d)=>c?Math.round(((v&c.m)>>>c.s)*255/(2**c.n-1)):d;
+            const out=new Uint8ClampedArray(w*h*4);
+            for(let i=0;i<w*h;i++){
+              const q=o+i*bytes;
+              const v=bytes===4?dv.getUint32(q,true):bytes===2?dv.getUint16(q,true):bytes===1?dv.getUint8(q):(dv.getUint8(q)|dv.getUint8(q+1)<<8|dv.getUint8(q+2)<<16);
+              const d=i*4;
+              if(alphaOnly){out[d]=out[d+1]=out[d+2]=255;out[d+3]=get(v,A,255);continue;}
+              const r=get(v,R,0);
+              out[d]=r;out[d+1]=(lum||(!G&&!B))?r:get(v,G,0);out[d+2]=(lum||(!G&&!B))?r:get(v,B,0);
+              out[d+3]=get(v,A,255);
+            }
+            return out;
+          }
+
+          function parseDDS(buf){
+            const dv=new DataView(buf);
+            if(buf.byteLength<128||dv.getUint32(0,true)!==0x20534444)throw new Error('Este não é um arquivo DDS válido.');
+            const h=dv.getUint32(12,true), w=dv.getUint32(16,true);
+            if(!w||!h||w>16384||h>16384)throw new Error('Dimensões inválidas ('+w+' × '+h+').');
+            const pf=dv.getUint32(80,true), cc=dv.getUint32(84,true), bpp=dv.getUint32(88,true);
+            const masks=[92,96,100,104].map(o=>dv.getUint32(o,true));
+            const map={bc1:'BC1 (DXT1)',bc2:'BC2 (DXT3)',bc3:'BC3 (DXT5)',bc4:'BC4',bc5:'BC5'};
+            let off=128, kind=null, raw=null;
+            if(pf&4){
+              const t={[FC('DXT1')]:'bc1',[FC('DXT2')]:'bc2',[FC('DXT3')]:'bc2',[FC('DXT4')]:'bc3',[FC('DXT5')]:'bc3',[FC('ATI1')]:'bc4',[FC('BC4U')]:'bc4',[FC('ATI2')]:'bc5',[FC('BC5U')]:'bc5'};
+              if(cc===FC('DX10')){
+                const f=dv.getUint32(128,true); off=148;
+                const dx={71:'bc1',72:'bc1',74:'bc2',75:'bc2',77:'bc3',78:'bc3',80:'bc4',81:'bc4',83:'bc5',84:'bc5'};
+                if(dx[f])kind=dx[f];
+                else if(f===28||f===29)raw={bpp:32,masks:[0xFF,0xFF00,0xFF0000,0xFF000000]};
+                else if(f===87||f===91)raw={bpp:32,masks:[0xFF0000,0xFF00,0xFF,0xFF000000]};
+                else if(f===61)raw={bpp:8,masks:[0xFF,0,0,0],lum:true};
+                else throw new Error('Formato DXGI '+f+' (como BC6H/BC7) ainda não é suportado.');
+              }else if(t[cc])kind=t[cc];
+              else throw new Error('Compressão “'+String.fromCharCode(cc&255,cc>>8&255,cc>>16&255,cc>>>24)+'” não suportada.');
+            }else{
+              raw={bpp,masks,lum:!!(pf&0x20000),alphaOnly:!!(pf&2)&&!(pf&0x40)&&!(pf&0x20000)};
+            }
+            let rgba,label;
+            if(kind){rgba=decodeBlocks(dv,off,w,h,kind);label=map[kind];}
+            else{rgba=decodeRaw(dv,off,w,h,raw.bpp,raw.masks,raw.lum,raw.alphaOnly);label='Sem compressão, '+raw.bpp+' bits';}
+            return{w,h,rgba,label};
+          }
+
+          function paint(it){
+            if(!it.rgba)return;
+            const c=it.canvas, ctx=c.getContext('2d');
+            c.width=it.w;c.height=it.h;
+            let d=it.rgba;
+            if($('#opaque').checked){d=new Uint8ClampedArray(it.rgba);for(let i=3;i<d.length;i+=4)d[i]=255;}
+            ctx.putImageData(new ImageData(d,it.w,it.h),0,0);
+          }
+
+          async function pngBlob(it){
+            const d=await it.load(), c=document.createElement('canvas');c.width=d.w;c.height=d.h;
+            let px=d.rgba;
+            if($('#opaque').checked){px=new Uint8ClampedArray(px);for(let i=3;i<px.length;i+=4)px[i]=255;}
+            c.getContext('2d').putImageData(new ImageData(px,d.w,d.h),0,0);
+            return await new Promise(r=>c.toBlob(r,'image/png'));
+          }
+          async function saveZip(files,zn){
+            let dl=null;try{dl=await claude.use('downloads');}catch(e){}
+            if(dl){try{await dl.save({filename:zn,data:zip(files)});}catch(e){if(e&&e.code!=='declined')alert('Não foi possível salvar: '+(e.message||e.code));}}
+            else for(const f of files){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([f.data]));a.download=f.name.split('/').pop();document.body.appendChild(a);a.click();a.remove();}
+          }
+          async function savePNG(it){
+            const name=it.name.replace(/\.dds$/i,'')+'.png';
+            const blob=await pngBlob(it);
+            let dl=null;
+            try{dl=await claude.use('downloads');}catch(e){}
+            if(dl){
+              try{await dl.save({filename:name,data:blob});}catch(e){if(e&&e.code!=='declined')alert('Não foi possível salvar: '+(e.message||e.code));}
+            }else{
+              const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();
+            }
+          }
+
+          function encodeASTC(it,opaque){
+            const {w,h,rgba}=it, bw=(w+3)>>2, bh=(h+3)>>2;
+            const out=new Uint8Array(16+bw*bh*16);
+            out.set([0x13,0xAB,0xA1,0x5C,4,4,1,w&255,w>>8&255,w>>16&255,h&255,h>>8&255,h>>16&255,1,0,0]);
+            const put=(o,pos,n,v)=>{for(let k=0;k<n;k++)if(v>>k&1)out[o+((pos+k)>>3)]|=1<<((pos+k)&7);};
+            const px=new Float32Array(64), m=[0,0,0,0], q=[1,1,1,1];
+            let bo=16;
+            for(let by=0;by<bh;by++)for(let bx=0;bx<bw;bx++,bo+=16){
+              m[0]=m[1]=m[2]=m[3]=0;
+              for(let i=0;i<16;i++){
+                const x=Math.min(bx*4+(i&3),w-1), y=Math.min(by*4+(i>>2),h-1), s=(y*w+x)*4;
+                px[i*4]=rgba[s];px[i*4+1]=rgba[s+1];px[i*4+2]=rgba[s+2];px[i*4+3]=opaque?255:rgba[s+3];
+                for(let c=0;c<4;c++)m[c]+=px[i*4+c]/16;
+              }
+              const C=new Float32Array(16);
+              for(let i=0;i<16;i++)for(let a=0;a<4;a++)for(let b=0;b<4;b++)C[a*4+b]+=(px[i*4+a]-m[a])*(px[i*4+b]-m[b]);
+              let v=[1,1,1,1];
+              for(let k=0;k<4;k++){
+                const n=[0,0,0,0];
+                for(let a=0;a<4;a++)for(let b=0;b<4;b++)n[a]+=C[a*4+b]*v[b];
+                const len=Math.hypot(...n);
+                if(len<1e-6)break;
+                v=n.map(x=>x/len);
+              }
+              let tmin=1e9,tmax=-1e9;
+              for(let i=0;i<16;i++){let t=0;for(let c=0;c<4;c++)t+=(px[i*4+c]-m[c])*v[c];if(t<tmin)tmin=t;if(t>tmax)tmax=t;}
+              let e0=[0,1,2,3].map(c=>Math.max(0,Math.min(255,Math.round(m[c]+v[c]*tmin))));
+              let e1=[0,1,2,3].map(c=>Math.max(0,Math.min(255,Math.round(m[c]+v[c]*tmax))));
+              if(e1[0]+e1[1]+e1[2]<e0[0]+e0[1]+e0[2]){const t=e0;e0=e1;e1=t;}
+              const d=e1.map((x,c)=>x-e0[c]), dd=d[0]*d[0]+d[1]*d[1]+d[2]*d[2]+d[3]*d[3];
+              put(bo,0,11,0x42);      // bloco 4x4, pesos de 2 bits
+              put(bo,13,4,12);        // endpoints RGBA diretos
+              for(let c=0;c<4;c++){put(bo,17+(c*2)*8,8,e0[c]);put(bo,17+(c*2+1)*8,8,e1[c]);}
+              for(let i=0;i<16;i++){
+                let t=0;
+                if(dd>0){for(let c=0;c<4;c++)t+=(px[i*4+c]-e0[c])*d[c];t/=dd;}
+                const wgt=t<.164?0:t<.5?1:t<.836?2:3;
+                put(bo,127-i*2,1,wgt&1);put(bo,126-i*2,1,wgt>>1&1);
+              }
+            }
+            return out;
+          }
+
+          function crc32(u){
+            if(!crc32.t){crc32.t=[];for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;crc32.t.push(c>>>0);}}
+            let r=-1;for(let i=0;i<u.length;i++)r=crc32.t[(r^u[i])&255]^(r>>>8);
+            return (r^-1)>>>0;
+          }
+          function zip(files){
+            const enc=new TextEncoder(), parts=[], cd=[]; let off=0;
+            for(const f of files){
+              const n=enc.encode(f.name), crc=crc32(f.data), sz=f.data.length;
+              const lh=new DataView(new ArrayBuffer(30));
+              lh.setUint32(0,0x04034b50,true);lh.setUint16(4,20,true);lh.setUint16(6,0x0800,true);lh.setUint16(12,0x21,true);
+              lh.setUint32(14,crc,true);lh.setUint32(18,sz,true);lh.setUint32(22,sz,true);lh.setUint16(26,n.length,true);
+              parts.push(lh.buffer,n,f.data);
+              const ch=new DataView(new ArrayBuffer(46));
+              ch.setUint32(0,0x02014b50,true);ch.setUint16(4,20,true);ch.setUint16(6,20,true);ch.setUint16(8,0x0800,true);ch.setUint16(14,0x21,true);
+              ch.setUint32(16,crc,true);ch.setUint32(20,sz,true);ch.setUint32(24,sz,true);ch.setUint16(28,n.length,true);ch.setUint32(42,off,true);
+              cd.push(ch.buffer,n);off+=30+n.length+sz;
+            }
+            let cs=0;for(const p of cd)cs+=p.byteLength||p.length;
+            const e=new DataView(new ArrayBuffer(22));
+            e.setUint32(0,0x06054b50,true);e.setUint16(8,files.length,true);e.setUint16(10,files.length,true);e.setUint32(12,cs,true);e.setUint32(16,off,true);
+            return new Blob([...parts,...cd,e.buffer],{type:'application/zip'});
+          }
+          async function saveAST(its,btn){
+            const old=btn.textContent;btn.disabled=true;btn.textContent='Convertendo…';
+            try{
+              const ext=$('#ext').value, opq=$('#opaque').checked, files=[];
+              for(const it of its){
+                btn.textContent='Convertendo '+(files.length+1)+'/'+its.length+'…';
+                await new Promise(r=>setTimeout(r,15));
+                files.push({name:(it.path||it.name).replace(/\.dds$/i,'')+'.'+ext,data:encodeASTC(await it.load(),opq)});
+              }
+              let dl=null;try{dl=await claude.use('downloads');}catch(e){}
+              if(dl){
+                const zn=its.length===1?files[0].name.split('/').pop().replace(/\.[^.]+$/,'')+'.zip':'texturas-ast.zip';
+                try{await dl.save({filename:zn,data:zip(files)});}catch(e){if(e&&e.code!=='declined')alert('Não foi possível salvar: '+(e.message||e.code));}
+              }else{
+                for(const f of files){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([f.data]));a.download=f.name.split('/').pop();document.body.appendChild(a);a.click();a.remove();}
+              }
+            }catch(e){alert('Falha ao converter: '+(e.message||e));}
+            btn.disabled=false;btn.textContent=old;
+          }
+
+          function addCard(file,res,error,lazy){
+            const card=document.createElement('div');card.className='card';
+            if(error){
+              const e=document.createElement('div');e.className='err';
+              e.textContent=(file.path||file.name)+': '+error;card.appendChild(e);
+              $('#list').prepend(card);return;
+            }
+            const it={name:file.name,path:file.path||file.name,w:res.w,h:res.h,rgba:lazy?null:res.rgba,canvas:document.createElement('canvas')};
+            it.load=lazy||(async()=>it);
+            const pic=document.createElement('div');pic.className='pic';pic.appendChild(it.canvas);
+            const meta=document.createElement('div');meta.className='meta';
+            const info=document.createElement('div');
+            const b=document.createElement('b');b.textContent=(file.path||file.name).replace(/\.dds$/i,'')+'.png';
+            const s=document.createElement('small');s.textContent=res.w+' × '+res.h+' px · '+res.label;
+            info.append(b,s);
+            const btn=document.createElement('button');btn.textContent='Baixar PNG';
+            btn.onclick=()=>savePNG(it);
+            const bAst=document.createElement('button');bAst.className='ghost';bAst.textContent='Baixar AST';
+            bAst.onclick=()=>saveAST([it],bAst);
+            const btns=document.createElement('div');btns.className='btns';btns.append(btn,bAst);
+            meta.append(info,btns);card.append(pic,meta);
+            $('#list').prepend(card);
+            items.push(it);
+            if(lazy){
+              const full=document.createElement('canvas');full.width=res.w;full.height=res.h;
+              full.getContext('2d').putImageData(new ImageData(res.rgba,res.w,res.h),0,0);
+              const k=Math.min(1,256/Math.max(res.w,res.h)),t=it.canvas;
+              t.width=Math.max(1,Math.round(res.w*k));t.height=Math.max(1,Math.round(res.h*k));
+              t.getContext('2d').drawImage(full,0,0,t.width,t.height);
+            }else paint(it);
+            $('#bar').hidden=false;
+          }
+
+          async function readZip(buf){
+            const dv=new DataView(buf),u=new Uint8Array(buf);
+            let e=-1;
+            for(let i=buf.byteLength-22;i>=Math.max(0,buf.byteLength-65557);i--)if(dv.getUint32(i,true)===0x06054b50){e=i;break;}
+            if(e<0)throw new Error('Este não é um arquivo .zip válido.');
+            const n=dv.getUint16(e+10,true);let p=dv.getUint32(e+16,true);const out=[];
+            for(let k=0;k<n;k++){
+              if(dv.getUint32(p,true)!==0x02014b50)throw new Error('Índice do .zip danificado.');
+              const nl=dv.getUint16(p+28,true),xl=dv.getUint16(p+30,true),cl=dv.getUint16(p+32,true);
+              const en={flags:dv.getUint16(p+8,true),method:dv.getUint16(p+10,true),csz:dv.getUint32(p+20,true),lo:dv.getUint32(p+42,true),name:new TextDecoder().decode(u.subarray(p+46,p+46+nl))};
+              if(en.csz===0xFFFFFFFF||en.lo===0xFFFFFFFF)throw new Error('.zip em formato ZIP64 ainda não é suportado.');
+              out.push(en);p+=46+nl+xl+cl;
+            }
+            return out;
+          }
+          async function extractEntry(buf,en){
+            if(en.flags&1)throw new Error('arquivo protegido por senha.');
+            const dv=new DataView(buf),s=en.lo+30+dv.getUint16(en.lo+26,true)+dv.getUint16(en.lo+28,true);
+            const raw=new Uint8Array(buf,s,en.csz);
+            if(en.method===0)return raw.slice().buffer;
+            if(en.method===8){
+              if(typeof DecompressionStream==='undefined')throw new Error('este navegador não consegue descompactar .zip.');
+              return await new Response(new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer();
+            }
+            throw new Error('método de compressão do .zip não suportado.');
+          }
+          async function handleZip(f){
+            const st=$('#status');
+            try{
+              const buf=await f.arrayBuffer();
+              const ents=(await readZip(buf)).filter(e=>/\.dds$/i.test(e.name)&&!e.name.endsWith('/')&&!/(^|\/)__MACOSX\//.test(e.name));
+              if(!ents.length){addCard({name:f.name},null,'nenhum arquivo .dds encontrado dentro do .zip.');st.textContent='';return;}
+              let ok=0,bad=0;
+              for(let i=0;i<ents.length;i++){
+                const en=ents[i];
+                st.textContent=f.name+': lendo '+(i+1)+' de '+ents.length+'…';
+                await new Promise(r=>setTimeout(r,0));
+                const file={name:en.name.split('/').pop(),path:en.name};
+                const load=async()=>parseDDS(await extractEntry(buf,en));
+                try{addCard(file,await load(),null,load);ok++;}
+                catch(e){addCard(file,null,e.message||'falha ao converter.');bad++;}
+              }
+              st.textContent=f.name+': '+ok+' textura(s) pronta(s)'+(bad?', '+bad+' com erro':'')+'.';
+            }catch(e){addCard({name:f.name},null,e.message||'não foi possível abrir o .zip.');st.textContent='';}
+          }
+          async function handle(files){
+            for(const f of files){
+              if(/\.zip$/i.test(f.name)){await handleZip(f);continue;}
+              if(!/\.dds$/i.test(f.name)){if(!f.webkitRelativePath)addCard(f,null,'só arquivos .dds e .zip são aceitos.');continue;}
+              try{const buf=await f.arrayBuffer();addCard({name:f.name,path:f.webkitRelativePath||f.name},parseDDS(buf));}
+              catch(e){addCard(f,null,e.message||'falha ao converter.');}
+            }
+          }
+
+          $('#file').addEventListener('change',e=>{handle([...e.target.files]);e.target.value='';});
+          const drop=$('#drop');
+          ['dragenter','dragover'].forEach(t=>drop.addEventListener(t,e=>{e.preventDefault();drop.classList.add('over');}));
+          ['dragleave','drop'].forEach(t=>drop.addEventListener(t,e=>{e.preventDefault();drop.classList.remove('over');}));
+          drop.addEventListener('drop',e=>handle([...e.dataTransfer.files]));
+          $('#pickdir').onclick=()=>$('#dir').click();
+          $('#dir').addEventListener('change',e=>{handle([...e.target.files]);e.target.value='';});
+          $('#opaque').addEventListener('change',()=>items.forEach(paint));
+          $('#all').onclick=async e=>{
+            const btn=e.currentTarget,old=btn.textContent;btn.disabled=true;
+            try{
+              const files=[];
+              for(let i=0;i<items.length;i++){
+                const it=items[i];
+                btn.textContent='Convertendo '+(i+1)+'/'+items.length+'…';
+                await new Promise(r=>setTimeout(r,0));
+                const b=await pngBlob(it);
+                files.push({name:(it.path||it.name).replace(/\.dds$/i,'')+'.png',data:new Uint8Array(await b.arrayBuffer())});
+              }
+              await saveZip(files,'texturas-png.zip');
+            }catch(err){alert('Falha ao converter: '+(err.message||err));}
+            btn.disabled=false;btn.textContent=old;
+          };
+          $('#allast').onclick=()=>saveAST([...items],$('#allast'));
+          $('#clear').onclick=()=>{items.length=0;$('#list').textContent='';$('#bar').hidden=true;};
+          </script>
+          </body>
+          </html>
+          FIM_6_ARQUIVO
+          base64 -d > app/src/main/res/mipmap-xxhdpi/ic_launcher.png <<'FIM_ICONE'
+          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
+          vsIAAAAASUVORK5CYII=
+          FIM_ICONE
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.5'
+      - name: Compilar
+        run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DDS-para-PNG-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
